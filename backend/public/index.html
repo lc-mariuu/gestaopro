@@ -667,14 +667,17 @@ async function imprimirOS(id){
 
 /* ---- PDV ---- */
 let _cart=[], _pdvQ='', _pdvDesc=0;
+let _pdvSel=0; // índice do produto "selecionado" via teclado (seta/números)
 VIEWS_register('pdv', async function(){
   let prods=[]; try{prods=await api('GET','/produtos?q='+encodeURIComponent(_pdvQ));}catch(e){toast(e.message,true);}
   const sub=_cart.reduce((s,i)=>s+i.preco*i.qtd,0);
   const total=Math.max(0,sub-num(_pdvDesc));
+  if(_pdvSel>=prods.length) _pdvSel=Math.max(0,prods.length-1);
   $('#view').innerHTML=`<div class="pdv-grid">
   <div>
-    <div class="search-box" style="max-width:none;margin-bottom:16px">${svg(I.search)}<input id="pdvBusca" placeholder="Buscar produto ou escanear código + Enter…" value="${esc(_pdvQ)}" oninput="_pdvQ=this.value;VIEWS.pdv()" onkeydown="if(event.key==='Enter')pdvBarcode(this.value)"></div>
-    <div class="pdv-produtos">${prods.map(p=>`<button class="prod-tile${p.estoque<=0?' esgotado':''}" ${p.estoque>0?`onclick="addToCart('${p._id}','${esc(p.nome)}',${p.preco},${p.custo},${p.estoque})"`:''}>
+    <div class="search-box" style="max-width:none;margin-bottom:10px">${svg(I.search)}<input id="pdvBusca" placeholder="Buscar produto ou escanear código + Enter…" value="${esc(_pdvQ)}" oninput="_pdvQ=this.value;_pdvSel=0;VIEWS.pdv()" onkeydown="pdvBuscaKey(event,this.value)"></div>
+    <div class="shortcut-hint"><span><kbd>F2</kbd> buscar</span><span><kbd>↑↓</kbd> navegar</span><span><kbd>Enter</kbd> adicionar</span><span><kbd>F4</kbd> finalizar</span><span><kbd>F8</kbd> limpar carrinho</span></div>
+    <div class="pdv-produtos">${prods.map((p,ix)=>`<button class="prod-tile${p.estoque<=0?' esgotado':''}${ix===_pdvSel?' sel':''}" ${p.estoque>0?`onclick="addToCart('${p._id}','${esc(p.nome)}',${p.preco},${p.custo},${p.estoque})"`:''}>
       <div class="cat">${esc(p.categoria||'Produto')}</div><div class="nm">${esc(p.nome)}</div>
       <div class="pr">${money(p.preco)}</div><div class="est">${p.estoque>0?p.estoque+' em estoque':'Sem estoque'}</div>
     </button>`).join('')||`<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--ink-3)">Nenhum produto encontrado.</div>`}
@@ -692,13 +695,24 @@ VIEWS_register('pdv', async function(){
         <div class="cart-total-row"><span>Subtotal</span><span class="tabular">${money(sub)}</span></div>
         <div class="cart-total-row"><span>Desconto</span><span><input class="inp tabular" style="width:90px;padding:5px 8px;text-align:right" value="${_pdvDesc}" inputmode="decimal" onchange="_pdvDesc=Math.max(0,num(this.value));VIEWS.pdv()"></span></div>
         <div class="cart-total-big"><span>Total</span><span class="tabular">${money(total)}</span></div>
-        <button class="btn btn-primary btn-block btn-lg" style="margin-top:12px" onclick="modalCheckout()">${svg(I.check)}Finalizar venda</button>
+        <button class="btn btn-primary btn-block btn-lg" style="margin-top:12px" onclick="modalCheckout()">${svg(I.check)}Finalizar venda <span class="kbd-inline">F4</span></button>
       </div>`:`<div class="empty" style="padding:40px">${svg(I.pdv)}<h4>Carrinho vazio</h4><p>Toque nos produtos para adicionar.</p></div>`}
     </div>
   </div>
   </div>`;
   setTimeout(()=>{const b=$('#pdvBusca');if(b)b.focus();},60);
 });
+function pdvBuscaKey(e,val){
+  const prods=document.querySelectorAll('.pdv-produtos .prod-tile');
+  if(e.key==='Enter'){ if(val.trim())pdvBarcode(val); else if(prods[_pdvSel]&&!prods[_pdvSel].classList.contains('esgotado')) prods[_pdvSel].click(); return; }
+  if(e.key==='ArrowDown'){ e.preventDefault(); _pdvSel=Math.min(prods.length-1,_pdvSel+1); highlightPdvSel(); }
+  if(e.key==='ArrowUp'){ e.preventDefault(); _pdvSel=Math.max(0,_pdvSel-1); highlightPdvSel(); }
+}
+function highlightPdvSel(){
+  document.querySelectorAll('.pdv-produtos .prod-tile').forEach((el,ix)=>el.classList.toggle('sel',ix===_pdvSel));
+  const sel=document.querySelector('.pdv-produtos .prod-tile.sel');
+  if(sel)sel.scrollIntoView({block:'nearest'});
+}
 function addToCart(id,nome,preco,custo,estoque){
   const it=_cart.find(i=>i.id===id);const inCart=it?it.qtd:0;
   if(inCart+1>estoque)return toast('Estoque insuficiente',true);
@@ -715,24 +729,109 @@ async function pdvBarcode(val){
     else toast('Produto não encontrado',true);
   }
 }
+
+/* ---- Checkout: pagamento misto + troco ---- */
+let _pagLines=[]; // [{forma, valor}]
+function pdvFormasDisponiveis(){ return ME?.pagamentos||['Dinheiro','PIX','Cartão de Crédito','Cartão de Débito']; }
 async function modalCheckout(){
   if(!_cart.length)return;
   let clientes=[]; try{clientes=await api('GET','/clientes');}catch(e){}
   const sub=_cart.reduce((s,i)=>s+i.preco*i.qtd,0);const total=Math.max(0,sub-num(_pdvDesc));
+  _pagLines=[{forma:pdvFormasDisponiveis()[0]||'Dinheiro',valor:total}];
   modal(`<div class="modal-header"><div><h3>Finalizar venda</h3><p>${_cart.length} item(s) · ${money(total)}</p></div><button class="btn-icon close" onclick="closeModal()">${svg(I.x)}</button></div>
   <div class="modal-body">
-    <div class="form-field"><label>Forma de pagamento *</label><select class="inp" id="v_pag">${(ME?.pagamentos||['Dinheiro','PIX','Cartão de Crédito','Cartão de Débito']).map(p=>`<option>${esc(p)}</option>`).join('')}</select></div>
     <div class="form-field"><label>Cliente (opcional)</label><select class="inp" id="v_cli"><option value="">Consumidor</option>${clientes.map(c=>`<option value="${c._id}">${esc(c.nome)}</option>`).join('')}</select></div>
-    <div style="background:var(--brand-bg);border-radius:10px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;color:var(--brand-d)">Total a receber</span><span style="font-family:'Space Grotesk';font-weight:700;font-size:24px;color:var(--brand-d)">${money(total)}</span></div>
+    <div class="form-field">
+      <label style="display:flex;align-items:center;justify-content:space-between">Pagamento
+        <button class="btn btn-ghost btn-sm" onclick="pagAddLinha(${total})" type="button">${svg(I.plus)}Dividir pagamento</button>
+      </label>
+      <div id="pagLinhas"></div>
+    </div>
+    <div id="pagResumo"></div>
   </div>
   <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Voltar</button>
-  <button class="btn btn-primary btn-lg" onclick="confirmVenda()">${svg(I.check)}Confirmar pagamento</button></div>`);
+  <button class="btn btn-primary btn-lg" id="btnConfirmarPag" onclick="confirmVenda(${total})">${svg(I.check)}Confirmar pagamento</button></div>`);
+  renderPagLinhas(total);
 }
-async function confirmVenda(){
-  const sub=_cart.reduce((s,i)=>s+i.preco*i.qtd,0);const total=Math.max(0,sub-num(_pdvDesc));
-  const body={itens:_cart.map(i=>({produtoId:i.id,nome:i.nome,qtd:i.qtd,preco:i.preco})),desconto:num(_pdvDesc),pagamento:$('#v_pag').value,clienteId:$('#v_cli').value||null};
-  try{const v=await api('POST','/vendas',body);_cart=[];_pdvDesc=0;closeModal();toast('Venda #'+v.numero+' · '+money(v.total));VIEWS.pdv();updateBadges();}
-  catch(e){toast(e.message,true);}
+function pagAddLinha(total){
+  const usados=_pagLines.reduce((s,l)=>s+num(l.valor),0);
+  const resto=Math.max(0,total-usados);
+  const opts=pdvFormasDisponiveis();
+  const usada=_pagLines[0]?.forma;
+  const proxima=opts.find(o=>o!==usada)||opts[0]||'Dinheiro';
+  _pagLines.push({forma:proxima,valor:resto});
+  renderPagLinhas(total);
+}
+function pagRmLinha(ix,total){ _pagLines.splice(ix,1); if(!_pagLines.length)_pagLines=[{forma:pdvFormasDisponiveis()[0]||'Dinheiro',valor:total}]; renderPagLinhas(total); }
+function pagSetForma(ix,v){ _pagLines[ix].forma=v; }
+function pagSetValor(ix,v,total){ _pagLines[ix].valor=num(v); renderPagLinhas(total,false); }
+function renderPagLinhas(total, resetFocus=true){
+  const opts=pdvFormasDisponiveis();
+  const el=$('#pagLinhas'); if(!el)return;
+  el.innerHTML=_pagLines.map((l,ix)=>`
+    <div class="pay-row">
+      <select class="inp" style="flex:1.3" onchange="pagSetForma(${ix},this.value)">${opts.map(o=>`<option${l.forma===o?' selected':''}>${esc(o)}</option>`).join('')}</select>
+      <input class="inp tabular" style="flex:1;text-align:right" inputmode="decimal" value="${l.valor}" onchange="pagSetValor(${ix},this.value,${total})">
+      ${_pagLines.length>1?`<button class="btn-icon" onclick="pagRmLinha(${ix},${total})">${svg(I.x)}</button>`:''}
+    </div>`).join('');
+  const somado=_pagLines.reduce((s,l)=>s+num(l.valor),0);
+  const isDinheiroUnico=_pagLines.length===1&&_pagLines[0].forma==='Dinheiro';
+  const falta=total-somado;
+  const troco=isDinheiroUnico&&somado>total?somado-total:0;
+  const resumo=$('#pagResumo');
+  let html='';
+  if(troco>0) html=`<div class="alert" style="background:var(--green-bg);color:#166534"><span>${svg(I.check)}</span><span>Troco: <b class="tabular">${money(troco)}</b></span></div>`;
+  else if(falta>0.004) html=`<div class="alert alert-amber">${svg(I.alert)}<span>Faltam <b class="tabular">${money(falta)}</b> para completar o total</span></div>`;
+  else if(falta<-0.004 && !isDinheiroUnico) html=`<div class="alert alert-amber">${svg(I.alert)}<span>Valor excede o total em <b class="tabular">${money(-falta)}</b></span></div>`;
+  resumo.innerHTML=html;
+  const btn=$('#btnConfirmarPag');
+  if(btn) btn.disabled = !isDinheiroUnico && Math.abs(falta)>0.004;
+}
+async function confirmVenda(total){
+  const sub=_cart.reduce((s,i)=>s+i.preco*i.qtd,0);
+  const somado=_pagLines.reduce((s,l)=>s+num(l.valor),0);
+  const isDinheiroUnico=_pagLines.length===1&&_pagLines[0].forma==='Dinheiro';
+  const troco=isDinheiroUnico&&somado>total?somado-total:0;
+  const pagamentos=_pagLines.map(l=>({forma:l.forma,valor:l.forma==='Dinheiro'&&troco>0?total:num(l.valor)}));
+  const body={
+    itens:_cart.map(i=>({produtoId:i.id,nome:i.nome,qtd:i.qtd,preco:i.preco})),
+    desconto:num(_pdvDesc),
+    pagamento:pagamentos.length>1?'Misto':pagamentos[0].forma,
+    pagamentos, troco,
+    clienteId:$('#v_cli').value||null
+  };
+  try{
+    const v=await api('POST','/vendas',body);
+    _cart=[];_pdvDesc=0;closeModal();
+    toast('Venda #'+v.numero+' · '+money(v.total));
+    VIEWS.pdv();updateBadges();
+    imprimirComprovante(v,pagamentos,troco);
+  }catch(e){toast(e.message,true);}
+}
+
+/* Comprovante (recibo estilo térmico) */
+function imprimirComprovante(v,pagamentos,troco){
+  const z=$('#printZone');z.style.display='block';
+  z.innerHTML=`<style>
+    body{font-family:'Courier New',monospace;font-size:12px;color:#000;width:280px;margin:0 auto}
+    .rc-c{text-align:center} .rc-line{border-top:1px dashed #000;margin:6px 0}
+    .rc-row{display:flex;justify-content:space-between;gap:8px}
+    h1{font-size:14px;margin:0 0 2px}
+  </style>
+  <div class="rc-c"><h1>${esc(ME?.loja||'Assistência Técnica')}</h1><div>Comprovante de Venda #${v.numero}</div><div>${fmtDT(new Date().toISOString())}</div></div>
+  <div class="rc-line"></div>
+  ${(v.itens||[]).map(i=>`<div class="rc-row"><span>${i.qtd}x ${esc(i.nome)}</span><span>${money(i.preco*i.qtd)}</span></div>`).join('')}
+  <div class="rc-line"></div>
+  <div class="rc-row"><span>Subtotal</span><span>${money(v.subtotal||v.total+num(v.desconto||0))}</span></div>
+  ${v.desconto?`<div class="rc-row"><span>Desconto</span><span>-${money(v.desconto)}</span></div>`:''}
+  <div class="rc-row" style="font-weight:bold;font-size:13px"><span>TOTAL</span><span>${money(v.total)}</span></div>
+  <div class="rc-line"></div>
+  ${pagamentos.map(p=>`<div class="rc-row"><span>${esc(p.forma)}</span><span>${money(p.valor)}</span></div>`).join('')}
+  ${troco>0?`<div class="rc-row"><span>Troco</span><span>${money(troco)}</span></div>`:''}
+  <div class="rc-line"></div>
+  <div class="rc-c">Obrigado pela preferência!</div>`;
+  window.print();
+  setTimeout(()=>{z.style.display='none';z.innerHTML='';},2000);
 }
 
 /* ---- CAIXA ---- */
